@@ -1,7 +1,7 @@
 "use strict"
 var q = require('q');
 var http = require('http');
-
+var url = require('url');
 var toString = Object.prototype.toString,
     push = Array.prototype.push;
 
@@ -406,62 +406,81 @@ var Trxn = (function () {
             'path': pathBase + this.OPTS.graph,
             headers: {
                 'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(payload, 'utf8')
+                'Content-Length': Buffer.byteLength(payload, 'utf8'),
+                'Accept': 'application/json'
             },
             'method': 'POST'
         };
         options.path += urlPath;
         
-        var req = http.request(options, function(res) {
-            var body = '';
-            var o = {};
+        function tryOperation(retry) {
+          if (self.OPTS.authToken) {
+            options.headers.authorization = self.OPTS.authToken;
+          }
+          var req = http.request(options, function(res) {
+              var body = '';
+              var o = {};
 
-            res.on('data', function (chunk) {
-                body += chunk;
-            });
-            res.on('end', function() {
-                o = JSON.parse(body);
-                if('success' in o && o.success == false){
-                    //send error info with reject
-                    if(self.newVertices && !!self.newVertices.length){
-                        //This indicates that all new Vertices were created but failed to
-                        //complete the rest of the tranasction so the new Vertices need deleted
-                        rollbackVertices.call(self)
-                            .then(function(result){
-                                deferred.reject(result);
-                            },function(error){
-                                deferred.reject(error);
-                            });
-                    } else {
-                        deferred.reject(o);
-                    }
+              res.on('data', function (chunk) {
+                  body += chunk;
+              });
+              res.on('end', function() {
+                if (res.statusCode == 200) {
+                  o = JSON.parse(body);
+                  if('success' in o && o.success == false){
+                      //send error info with reject
+                      if(self.newVertices && !!self.newVertices.length){
+                          //This indicates that all new Vertices were created but failed to
+                          //complete the rest of the tranasction so the new Vertices need deleted
+                          rollbackVertices.call(self)
+                              .then(function(result){
+                                  deferred.reject(result);
+                              },function(error){
+                                  deferred.reject(error);
+                              });
+                      } else {
+                          deferred.reject(o);
+                      }
+                  } else {
+                      delete o.version;
+                      delete o.queryTime;
+                      delete o.txProcessed;
+                      //This occurs after newVertices have been created
+                      //and passed in to postData
+                      if(!('results' in o) && self.newVertices && !!self.newVertices.length){
+                          o.newVertices = [];
+                          push.apply(o.newVertices, self.newVertices);
+                          self.newVertices.length = 0;
+                      }
+                      if('tx' in data){
+                          data.tx.length = 0;
+                      }
+                      deferred.resolve(o);
+                  }
                 } else {
-                    delete o.version;
-                    delete o.queryTime;
-                    delete o.txProcessed;
-                    //This occurs after newVertices have been created
-                    //and passed in to postData
-                    if(!('results' in o) && self.newVertices && !!self.newVertices.length){
-                        o.newVertices = [];
-                        push.apply(o.newVertices, self.newVertices);
-                        self.newVertices.length = 0;
-                    }
-                    if('tx' in data){
-                        data.tx.length = 0;
-                    }
-                    deferred.resolve(o);
+                  if (retry) {
+                    self.clientAuth(new Error('http error ' + res.statusCode), function (err) {
+                      if (err)
+                        return deferred.reject(err);
+                      tryOperation(false);
+                    });
+                  } else {
+                    deferred.reject(new Error('http error ' + res.statusCode));
+                  }
                 }
-            });
-        });
+              });
+          });
 
-        req.on('error', function(e) {
-            console.error('problem with request: ' + e.message);
-            deferred.reject(e);
-        });
+          req.on('error', function(e) {
+              console.error('problem with request: ' + e.message);
+              deferred.reject(e);
+          });
 
-        // write data to request body
-        req.write(payload);
-        req.end();
+          // write data to request body
+          req.write(payload);
+          req.end();
+        }
+        tryOperation(true);
         return deferred.promise;
     }
 
@@ -489,6 +508,58 @@ var Gremlin = (function () {
         }
     }
 
+    function clientAuth(error, callback) {
+      if (!this.OPTS.clientId) {
+        if (callback)
+          callback(error);
+        return;
+      }
+      var u = url.parse(this.OPTS.tokenUrl);
+      var options = {
+        host: u.hostname,
+        port: u.port,
+        path: u.path,
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+        },
+        'method': 'POST'
+      };
+      var self = this;
+      var req = http.request(options, function (res) {
+        var body = '';
+        res.on('data', function (c) {
+          body += c;
+        });
+        res.on('error', function (e) {
+          if (callback) {
+            callback(e);
+            callback = null;
+          }
+          self.OPTS.authToken = null;
+        });
+        res.on('end', function () {
+          if (res.statusCode == 200) {
+            var o = JSON.parse(body);
+            self.OPTS.authToken = o.token_type + ' ' + o.access_token;
+            callback(null);
+          } else {
+            callback(error);
+          }
+        });
+      });      
+      req.on('error', function (e) {
+        if (callback) {
+          callback(e);
+          callback = null;
+        }
+      });
+      req.write('grant_type=client_credentials'
+        + '&client_id=' + this.OPTS.clientId
+        + '&client_secret=' + this.OPTS.clientSecret
+        + '&scope=' + this.OPTS.clientScopes);
+      req.end();
+    }
     function getData() {
         var deferred = q.defer();
         var options = {
@@ -496,28 +567,46 @@ var Gremlin = (function () {
             'port': this.OPTS.port,
             'path': pathBase + this.OPTS.graph + gremlinExt + encodeURIComponent(this.params),
             headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json'
             },
             'method': 'GET'
         };
+        var self = this;
+        function tryOperation(retry) {
+          if (self.OPTS.authToken) {
+            options.headers.authorization = self.OPTS.authToken;
+          }
+          http.get(options, function(res) {
+              var body = '';
+              var o = {};
+              res.on('data', function(results) {
+                  body += results;
+              });
 
-        http.get(options, function(res) {
-            var body = '';
-            var o = {};
-            res.on('data', function(results) {
-                body += results;
-            });
-
-            res.on('end', function() {
-                o = JSON.parse(body);
-                delete o.version;
-                delete o.queryTime;
-                deferred.resolve(o);
-            });
-        }).on('error', function(e) {
-            deferred.reject(e);
-        });
-        
+              res.on('end', function() {
+                if (res.statusCode == 200) {
+                  o = JSON.parse(body);
+                  delete o.version;
+                  delete o.queryTime;
+                  deferred.resolve(o);
+                } else {
+                  if (retry) {
+                    self.clientAuth(new Error('http error ' + res.statusCode), function (err) {
+                      if (err)
+                        return deferred.reject(err);
+                      tryOperation(false);
+                    });
+                  } else {
+                    deferred.reject(new Error('http error ' + res.statusCode));
+                  }
+                }
+              });
+          }).on('error', function(e) {
+              deferred.reject(e);
+          });
+        }
+        tryOperation(true);
         return deferred.promise;
     }
 
@@ -602,6 +691,7 @@ var Gremlin = (function () {
 
         /*** http ***/
         then: get(),
+        clientAuth: clientAuth
 
     }
     return Gremlin;
@@ -666,7 +756,9 @@ var gRex = (function(){
     }
 
     gRex.prototype.begin = function (){
-        return new Trxn(this.OPTS);
+        var txn = new Trxn(this.OPTS);
+        txn.clientAuth = this.clientAuth;
+        return txn;
     }
 
     return gRex;
