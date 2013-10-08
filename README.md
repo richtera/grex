@@ -88,6 +88,24 @@ Graph database name
 
 This can remain as false, if IDs are number. If IDs are not numbers (i.e. alpha-numeric or string), but still pass parseFloat() test, then idRegex must be set. This property will enable gRex to distinguish between an ID and a float expression.
 
+###Additional Options to customize rexster API urls
+
+####pathBase (default: '/graphs/')
+
+Root location of graphs resource
+
+####gremlinExt (default: '/tp/gremlin?script=')
+
+Sub path where gremlin can be executed as a script
+
+####batchExt (default: '/tp/batch/tx')
+
+Sub path where the batch extension is located
+
+####newVertex  (default: '/vertices')
+
+Sub path where vertices can be POST'd
+
 ```
 g.setOptions({ host: 'myDomain', graph: 'myOrientdb', idRegex: /^[0-9]+:[0-9]+$/ });
 ```

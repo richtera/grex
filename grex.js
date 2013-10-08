@@ -36,6 +36,95 @@ function isArray(o) {
     return toString.call(o) === '[object Array]';
 }
 
+function postData(urlPath, data){
+    var self = this;
+    var deferred = q.defer();
+    var payload = JSON.stringify(data) || '{}';
+    
+    var options = {
+        'host': this.OPTS.host,
+        'port': this.OPTS.port,
+        'path': (this.OPTS.pathBase || pathBase) + this.OPTS.graph,
+        headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(payload, 'utf8'),
+            'Accept': 'application/json'
+        },
+        'method': 'POST'
+    };
+    options.path += urlPath;
+    
+    function tryOperation(retry) {
+      if (self.OPTS.authToken) {
+        options.headers.authorization = self.OPTS.authToken;
+      }
+      var req = http.request(options, function(res) {
+          var body = '';
+          var o = {};
+
+          res.on('data', function (chunk) {
+              body += chunk;
+          });
+          res.on('end', function() {
+            if (res.statusCode == 200) {
+              o = JSON.parse(body);
+              if('success' in o && o.success == false){
+                  //send error info with reject
+                  if(self.newVertices && !!self.newVertices.length){
+                      //This indicates that all new Vertices were created but failed to
+                      //complete the rest of the tranasction so the new Vertices need deleted
+                      rollbackVertices.call(self)
+                          .then(function(result){
+                              deferred.reject(result);
+                          },function(error){
+                              deferred.reject(error);
+                          });
+                  } else {
+                      deferred.reject(o);
+                  }
+              } else {
+                  delete o.version;
+                  delete o.queryTime;
+                  delete o.txProcessed;
+                  //This occurs after newVertices have been created
+                  //and passed in to postData
+                  if(!('results' in o) && self.newVertices && !!self.newVertices.length){
+                      o.newVertices = [];
+                      push.apply(o.newVertices, self.newVertices);
+                      self.newVertices.length = 0;
+                  }
+                  if('tx' in data){
+                      data.tx.length = 0;
+                  }
+                  deferred.resolve(o);
+              }
+            } else {
+              if (retry) {
+                self.clientAuth(new Error('http error ' + res.statusCode), function (err) {
+                  if (err)
+                    return deferred.reject(err);
+                  tryOperation(false);
+                });
+              } else {
+                deferred.reject(new Error('http error ' + res.statusCode));
+              }
+            }
+          });
+      });
+
+      req.on('error', function(e) {
+          console.error('problem with request: ' + e.message);
+          deferred.reject(e);
+      });
+
+      // write data to request body
+      req.write(payload);
+      req.end();
+    }
+    tryOperation(true);
+    return deferred.promise;
+}
+
 function qryMain(method, options, createNew){
     return function(){
         var self = this,
@@ -316,7 +405,7 @@ var Trxn = (function () {
         //unsuccessful. On fail throw error to indicate that transaction was
         //unsuccessful and that the new vertices created were unable to be removed
         //from the database and need to be handled manually.
-        return postData.call(self, batchExt, { tx: self.txArray })
+        return postData.call(self, self.OPTS.batchExt || batchExt, { tx: self.txArray })
             .then(function(success){
                 return errObj.message = "Could not complete transaction. Transaction has been rolled back.";
             }, function(fail){
@@ -341,7 +430,7 @@ var Trxn = (function () {
                 for (var i = 0; i < newVerticesLen; i++) {
                     //Need to see why no creating promised
                     //just changed 
-                    promises.push(postData.call(self, newVertex, self.newVertices[i]));
+                    promises.push(postData.call(self, self.OPTS.newVertex || newVertex, self.newVertices[i]));
                 };
                 return q.all(promises).then(function(result){
                     var inError = false;
@@ -375,7 +464,7 @@ var Trxn = (function () {
                             };    
                         }                        
                     };
-                    return postData.call(self, batchExt, { tx: self.txArray });
+                    return postData.call(self, self.OPTS.batchExt || batchExt, { tx: self.txArray });
                 }, function(err){
                     console.error(err);
                 }); 
@@ -390,98 +479,9 @@ var Trxn = (function () {
                         };    
                     }                        
                 };
-                return postData.call(self, batchExt, { tx: self.txArray });
+                return postData.call(self, self.OPTS.batchExt || batchExt, { tx: self.txArray });
             }
         }
-    }
-
-    function postData(urlPath, data){
-        var self = this;
-        var deferred = q.defer();
-        var payload = JSON.stringify(data) || '{}';
-        
-        var options = {
-            'host': this.OPTS.host,
-            'port': this.OPTS.port,
-            'path': pathBase + this.OPTS.graph,
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(payload, 'utf8'),
-                'Accept': 'application/json'
-            },
-            'method': 'POST'
-        };
-        options.path += urlPath;
-        
-        function tryOperation(retry) {
-          if (self.OPTS.authToken) {
-            options.headers.authorization = self.OPTS.authToken;
-          }
-          var req = http.request(options, function(res) {
-              var body = '';
-              var o = {};
-
-              res.on('data', function (chunk) {
-                  body += chunk;
-              });
-              res.on('end', function() {
-                if (res.statusCode == 200) {
-                  o = JSON.parse(body);
-                  if('success' in o && o.success == false){
-                      //send error info with reject
-                      if(self.newVertices && !!self.newVertices.length){
-                          //This indicates that all new Vertices were created but failed to
-                          //complete the rest of the tranasction so the new Vertices need deleted
-                          rollbackVertices.call(self)
-                              .then(function(result){
-                                  deferred.reject(result);
-                              },function(error){
-                                  deferred.reject(error);
-                              });
-                      } else {
-                          deferred.reject(o);
-                      }
-                  } else {
-                      delete o.version;
-                      delete o.queryTime;
-                      delete o.txProcessed;
-                      //This occurs after newVertices have been created
-                      //and passed in to postData
-                      if(!('results' in o) && self.newVertices && !!self.newVertices.length){
-                          o.newVertices = [];
-                          push.apply(o.newVertices, self.newVertices);
-                          self.newVertices.length = 0;
-                      }
-                      if('tx' in data){
-                          data.tx.length = 0;
-                      }
-                      deferred.resolve(o);
-                  }
-                } else {
-                  if (retry) {
-                    self.clientAuth(new Error('http error ' + res.statusCode), function (err) {
-                      if (err)
-                        return deferred.reject(err);
-                      tryOperation(false);
-                    });
-                  } else {
-                    deferred.reject(new Error('http error ' + res.statusCode));
-                  }
-                }
-              });
-          });
-
-          req.on('error', function(e) {
-              console.error('problem with request: ' + e.message);
-              deferred.reject(e);
-          });
-
-          // write data to request body
-          req.write(payload);
-          req.end();
-        }
-        tryOperation(true);
-        return deferred.promise;
     }
 
     Trxn.prototype = {
@@ -499,7 +499,7 @@ var Trxn = (function () {
 var Gremlin = (function () {
     function Gremlin(options) {
         this.OPTS = options;
-        this.params = 'g';    
+        this.params = 'g';
     }
   
     function get() {
@@ -565,7 +565,7 @@ var Gremlin = (function () {
         var options = {
             'host': this.OPTS.host,
             'port': this.OPTS.port,
-            'path': pathBase + this.OPTS.graph + gremlinExt + encodeURIComponent(this.params),
+            'path': (this.OPTS.pathBase || pathBase) + this.OPTS.graph + (this.OPTS.gremlinExt || gremlinExt) + encodeURIComponent(this.params),
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'Accept': 'application/json'
@@ -616,6 +616,7 @@ var Gremlin = (function () {
             return this;
         },
         
+        postData: postData,
         /*** Transform ***/
         both: qryMain('both'),
         bothE: qryMain('bothE'),
@@ -712,6 +713,7 @@ var gRex = (function(){
             this.setOptions(options);
         }
 
+        this.postData = postData;
         this.V = qryMain('V', this.OPTS, true);
         this._ = qryMain('_', this.OPTS, true);
         this.E = qryMain('E', this.OPTS, true);
