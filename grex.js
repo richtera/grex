@@ -37,6 +37,134 @@ function isArray(o) {
     return toString.call(o) === '[object Array]';
 }
 
+function get() {
+    return function(success, error){
+        return getData.call(this).then(success, error);
+    }
+}
+
+function clientAuth(error, callback) {
+  if (!this.OPTS.clientId) {
+    if (callback)
+      callback(error);
+    return;
+  }
+  var u = url.parse(this.OPTS.tokenUrl);
+  var options = {
+    host: u.hostname,
+    port: u.port || (u.protocol === 'https:' ? 443 : 80),
+    path: u.path,
+    headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+    },
+    'method': 'POST'
+  };
+  if (this.OPTS.ca && options.port === 443) {
+    if (!this.OPTS.agent) {
+      this.OPTS.agent = new https.Agent({
+        'ca': this.OPTS.ca,
+        rejectUnauthorized: (this.OPTS.rejectUnauthorized !== undefined) ? this.OPTS.rejectUnauthorized : true
+      });
+    }
+    options.agent = this.OPTS.agent;
+  }
+  var self = this;
+  var req = (options.port === 443 ? https : http).request(options, function (res) {
+    var body = '';
+    res.on('data', function (c) {
+      body += c;
+    });
+    res.on('error', function (e) {
+      if (callback) {
+        callback(e);
+        callback = null;
+      }
+      self.OPTS.authToken = null;
+    });
+    res.on('end', function () {
+      console.log(options, body, res.statusCode);
+      if (res.statusCode == 200) {
+        var o = JSON.parse(body);
+        self.OPTS.authToken = o.token_type + ' ' + o.access_token;
+        callback(null);
+      } else {
+        callback(error);
+      }
+    });
+  });      
+  req.on('error', function (e) {
+    if (callback) {
+      callback(e);
+      callback = null;
+    }
+  });
+  req.write('grant_type=client_credentials'
+    + '&client_id=' + this.OPTS.clientId
+    + '&client_secret=' + this.OPTS.clientSecret
+    + '&scope=' + this.OPTS.clientScopes);
+  req.end();
+}
+function getData() {
+    var deferred = q.defer();
+    var options = {
+        'host': this.OPTS.host,
+        'port': this.OPTS.port,
+        'path': (this.OPTS.pathBase || pathBase) + this.OPTS.graph + (this.OPTS.gremlinExt || gremlinExt) + encodeURIComponent(this.params),
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+        },
+        'method': 'GET'
+    };
+    if (this.OPTS.ca && options.port === 443) {
+      if (!this.OPTS.agent) {
+        this.OPTS.agent = new https.Agent({
+          'ca': this.OPTS.ca,
+          rejectUnauthorized: (this.OPTS.rejectUnauthorized !== undefined) ? this.OPTS.rejectUnauthorized : true
+        });
+      }
+      options.agent = this.OPTS.agent;
+    }
+    var self = this;
+    function tryOperation(retry) {
+      if (self.OPTS.authToken) {
+        options.headers.authorization = self.OPTS.authToken;
+      }
+      (options.port === 443 ? https : http).get(options, function(res) {
+          var body = '';
+          var o = {};
+          res.on('data', function(results) {
+              body += results;
+          });
+
+          res.on('end', function() {
+            console.log(options, body, res.statusCode);
+            if (res.statusCode == 200) {
+              o = JSON.parse(body);
+              delete o.version;
+              delete o.queryTime;
+              deferred.resolve(o);
+            } else {
+              if (retry) {
+                self.clientAuth(new Error('http error ' + res.statusCode), function (err) {
+                  if (err)
+                    return deferred.reject(err);
+                  tryOperation(false);
+                });
+              } else {
+                deferred.reject(new Error('http error ' + res.statusCode));
+              }
+            }
+          });
+      }).on('error', function(e) {
+          deferred.reject(e);
+      });
+    }
+    tryOperation(true);
+    return deferred.promise;
+}
+
 function postData(urlPath, data){
     var self = this;
     var deferred = q.defer();
@@ -75,6 +203,7 @@ function postData(urlPath, data){
               body += chunk;
           });
           res.on('end', function() {
+            console.log(options, body, res.statusCode);
             if (res.statusCode == 200) {
               o = JSON.parse(body);
               if('success' in o && o.success == false){
@@ -511,132 +640,6 @@ var Gremlin = (function () {
         this.params = 'g';
     }
   
-    function get() {
-        return function(success, error){
-            return getData.call(this).then(success, error);
-        }
-    }
-
-    function clientAuth(error, callback) {
-      if (!this.OPTS.clientId) {
-        if (callback)
-          callback(error);
-        return;
-      }
-      var u = url.parse(this.OPTS.tokenUrl);
-      var options = {
-        host: u.hostname,
-        port: u.port,
-        path: u.path,
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'application/json'
-        },
-        'method': 'POST'
-      };
-      if (this.OPTS.ca && options.port === 443) {
-        if (!this.OPTS.agent) {
-          this.OPTS.agent = new https.Agent({
-            'ca': this.OPTS.ca,
-            rejectUnauthorized: (this.OPTS.rejectUnauthorized !== undefined) ? this.OPTS.rejectUnauthorized : true
-          });
-        }
-        options.agent = this.OPTS.agent;
-      }
-      var self = this;
-      var req = (options.port === 443 ? https : http).request(options, function (res) {
-        var body = '';
-        res.on('data', function (c) {
-          body += c;
-        });
-        res.on('error', function (e) {
-          if (callback) {
-            callback(e);
-            callback = null;
-          }
-          self.OPTS.authToken = null;
-        });
-        res.on('end', function () {
-          if (res.statusCode == 200) {
-            var o = JSON.parse(body);
-            self.OPTS.authToken = o.token_type + ' ' + o.access_token;
-            callback(null);
-          } else {
-            callback(error);
-          }
-        });
-      });      
-      req.on('error', function (e) {
-        if (callback) {
-          callback(e);
-          callback = null;
-        }
-      });
-      req.write('grant_type=client_credentials'
-        + '&client_id=' + this.OPTS.clientId
-        + '&client_secret=' + this.OPTS.clientSecret
-        + '&scope=' + this.OPTS.clientScopes);
-      req.end();
-    }
-    function getData() {
-        var deferred = q.defer();
-        var options = {
-            'host': this.OPTS.host,
-            'port': this.OPTS.port,
-            'path': (this.OPTS.pathBase || pathBase) + this.OPTS.graph + (this.OPTS.gremlinExt || gremlinExt) + encodeURIComponent(this.params),
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Accept': 'application/json'
-            },
-            'method': 'GET'
-        };
-        if (this.OPTS.ca && options.port === 443) {
-          if (!this.OPTS.agent) {
-            this.OPTS.agent = new https.Agent({
-              'ca': this.OPTS.ca,
-              rejectUnauthorized: (this.OPTS.rejectUnauthorized !== undefined) ? this.OPTS.rejectUnauthorized : true
-            });
-          }
-          options.agent = this.OPTS.agent;
-        }
-        var self = this;
-        function tryOperation(retry) {
-          if (self.OPTS.authToken) {
-            options.headers.authorization = self.OPTS.authToken;
-          }
-          (options.port === 443 ? https : http).get(options, function(res) {
-              var body = '';
-              var o = {};
-              res.on('data', function(results) {
-                  body += results;
-              });
-
-              res.on('end', function() {
-                if (res.statusCode == 200) {
-                  o = JSON.parse(body);
-                  delete o.version;
-                  delete o.queryTime;
-                  deferred.resolve(o);
-                } else {
-                  if (retry) {
-                    self.clientAuth(new Error('http error ' + res.statusCode), function (err) {
-                      if (err)
-                        return deferred.reject(err);
-                      tryOperation(false);
-                    });
-                  } else {
-                    deferred.reject(new Error('http error ' + res.statusCode));
-                  }
-                }
-              });
-          }).on('error', function(e) {
-              deferred.reject(e);
-          });
-        }
-        tryOperation(true);
-        return deferred.promise;
-    }
-
     Gremlin.prototype = {
         _buildGremlin: function (qryString){
             this.params = qryString;
@@ -720,7 +723,6 @@ var Gremlin = (function () {
         /*** http ***/
         then: get(),
         clientAuth: clientAuth
-
     }
     return Gremlin;
 })();
@@ -771,7 +773,9 @@ var gRex = (function(){
         this.clear =  qryMain('clear', this.OPTS, true);
         this.shutdown =  qryMain('shutdown', this.OPTS, true);
         this.getFeatures = qryMain('getFeatures', this.OPTS, true);
-
+        this.clientAuth = clientAuth;
+        this.get = get;
+        this.getData = getData;
     }
 
     gRex.prototype.setOptions = function (options){
