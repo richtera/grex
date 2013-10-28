@@ -83,7 +83,6 @@ function clientAuth(error, callback) {
       self.OPTS.authToken = null;
     });
     res.on('end', function () {
-      console.log(options, body, res.statusCode);
       if (res.statusCode == 200) {
         var o = JSON.parse(body);
         self.OPTS.authToken = o.token_type + ' ' + o.access_token;
@@ -139,7 +138,6 @@ function getData() {
           });
 
           res.on('end', function() {
-            console.log(options, body, res.statusCode);
             if (res.statusCode == 200) {
               o = JSON.parse(body);
               delete o.version;
@@ -203,7 +201,6 @@ function postData(urlPath, data){
               body += chunk;
           });
           res.on('end', function() {
-            console.log(options, body, res.statusCode);
             if (res.statusCode == 200) {
               o = JSON.parse(body);
               if('success' in o && o.success == false){
