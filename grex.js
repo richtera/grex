@@ -1,6 +1,7 @@
 "use strict"
 var q = require('q');
 var http = require('http');
+var https = require('https');
 var url = require('url');
 var toString = Object.prototype.toString,
     push = Array.prototype.push;
@@ -52,13 +53,21 @@ function postData(urlPath, data){
         },
         'method': 'POST'
     };
+    if (this.OPTS.ca && options.port === 443) {
+      if (!this.OPTS.agent) {
+        this.OPTS.agent = new https.Agent({
+          'ca': this.OPTS.ca,
+          rejectUnauthorized: (this.OPTS.rejectUnauthorized !== undefined) ? this.OPTS.rejectUnauthorized : true
+        });
+      }
+      options.agent = this.OPTS.agent;
+    }
     options.path += urlPath;
-    
     function tryOperation(retry) {
       if (self.OPTS.authToken) {
         options.headers.authorization = self.OPTS.authToken;
       }
-      var req = http.request(options, function(res) {
+      var req = (options.port === 443 ? https : http).request(options, function(res) {
           var body = '';
           var o = {};
 
@@ -525,8 +534,17 @@ var Gremlin = (function () {
         },
         'method': 'POST'
       };
+      if (this.OPTS.ca && options.port === 443) {
+        if (!this.OPTS.agent) {
+          this.OPTS.agent = new https.Agent({
+            'ca': this.OPTS.ca,
+            rejectUnauthorized: (this.OPTS.rejectUnauthorized !== undefined) ? this.OPTS.rejectUnauthorized : true
+          });
+        }
+        options.agent = this.OPTS.agent;
+      }
       var self = this;
-      var req = http.request(options, function (res) {
+      var req = (options.port === 443 ? https : http).request(options, function (res) {
         var body = '';
         res.on('data', function (c) {
           body += c;
@@ -572,12 +590,21 @@ var Gremlin = (function () {
             },
             'method': 'GET'
         };
+        if (this.OPTS.ca && options.port === 443) {
+          if (!this.OPTS.agent) {
+            this.OPTS.agent = new https.Agent({
+              'ca': this.OPTS.ca,
+              rejectUnauthorized: (this.OPTS.rejectUnauthorized !== undefined) ? this.OPTS.rejectUnauthorized : true
+            });
+          }
+          options.agent = this.OPTS.agent;
+        }
         var self = this;
         function tryOperation(retry) {
           if (self.OPTS.authToken) {
             options.headers.authorization = self.OPTS.authToken;
           }
-          http.get(options, function(res) {
+          (options.port === 443 ? https : http).get(options, function(res) {
               var body = '';
               var o = {};
               res.on('data', function(results) {
